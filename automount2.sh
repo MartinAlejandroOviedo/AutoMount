@@ -19,17 +19,26 @@ if [[ "$EUID" -ne 0 ]]; then
 fi
 
 # Verificar si util-linux (que contiene blkid) está disponible e instalar si falta
-if ! dpkg -s util-linux &> /dev/null; then
+if ! command -v blkid &> /dev/null; then
     echo "El script requiere util-linux (que contiene blkid) para funcionar correctamente."
-    echo -e "\nDesea instalar util-linux ahora? (s: instalar / n: salir):"
-    read -r respuesta
-    if [[ "$respuesta" == "s" || "$respuesta" == "S" ]]; then
+    if confirmacion "¿Desea instalar util-linux ahora?"; then
         echo -e "\nInstalando util-linux..."
-        if apt-get update && apt-get install -y util-linux; then
-            echo "util-linux se ha instalado correctamente."
+        if command -v apt-get &> /dev/null; then
+            apt-get update && apt-get install -y util-linux
+        elif command -v yum &> /dev/null; then
+            yum install -y util-linux
+        elif command -v dnf &> /dev/null; then
+            dnf install -y util-linux
         else
+            echo "Error: No se pudo identificar el gestor de paquetes. Instale util-linux manualmente."
+            exit 1
+        fi
+
+        if ! command -v blkid &> /dev/null; then
             echo "Error: No se pudo instalar util-linux. Verifique su conexión a Internet y los permisos."
             exit 1
+        else
+            echo "util-linux se ha instalado correctamente."
         fi
     else
         echo "util-linux es necesario para continuar. Saliendo del script."
@@ -63,8 +72,14 @@ if ! lsblk | grep -qw "$unidad"; then
 fi
 
 # Preguntar el punto de montaje
-echo -e "\nIngrese el punto de montaje (por ejemplo, /home/martinao/Disco1):"
+echo -e "\nIngrese el punto de montaje (por ejemplo, /home/$USUARIO/Disco1):"
 read -r punto_montaje
+
+# Verificar si el punto de montaje ya está en uso
+if mountpoint -q "$punto_montaje"; then
+    echo "Error: El punto de montaje $punto_montaje ya está en uso."
+    exit 1
+fi
 
 # Crear el punto de montaje si no existe
 if [ ! -d "$punto_montaje" ]; then
@@ -85,82 +100,68 @@ uuid=$(blkid -s UUID -o value "/dev/$unidad")
 fstype=$(blkid -s TYPE -o value "/dev/$unidad")
 
 # Verificar si se obtuvo el UUID y el tipo de sistema de archivos
-if [ -n "$uuid" ] && [ -n "$fstype" ]; then
-    # Verificar si ya existe una entrada en /etc/fstab
-    if grep -q "UUID=$uuid" /etc/fstab; then
-        echo "Error: Ya existe una entrada en /etc/fstab para esta unidad. No se realizarán cambios duplicados."
-        exit 1
-    fi
-
-    # Definir opciones de montaje según el tipo de sistema de archivos
-    case "$fstype" in
-        ext4|ext3|ext2)
-            # Para sistemas de archivos ext, la gestión de permisos se hace a nivel de sistema de archivos
-            opciones="defaults,auto,user,rw,exec,umask=022"
-            ;;
-        ntfs|vfat|exfat)
-            # Para NTFS, FAT32 y exFAT, asignar UID y GID al usuario
-            opciones="defaults,auto,users,rw,exec,umask=022"
-            ;;
-        *)
-            # Opciones predeterminadas para otros tipos de sistemas de archivos
-            opciones="defaults,auto,users,rw,exec,umask=022"
-            ;;
-    esac
-
-    # Confirmar con el usuario antes de modificar /etc/fstab
-    echo -e "\nSe agregará la siguiente entrada a /etc/fstab:\nUUID=$uuid $punto_montaje $fstype $opciones 0 0"
-    echo -e "\n¿Desea continuar con los cambios? (s/n):"
-    read -r confirmacion
-    if [[ "$confirmacion" != "s" && "$confirmacion" != "S" ]]; then
-        echo "Operación cancelada por el usuario. Saliendo del script."
-        exit 1
-    fi
-
-    # Agregar entrada en /etc/fstab con opciones determinadas
-    echo "Agregando entrada a /etc/fstab..."
-    if echo "UUID=$uuid $punto_montaje $fstype $opciones 0 0" >> /etc/fstab; then
-        echo "La unidad se ha configurado para montarse automáticamente al iniciar."
-    else
-        echo "Error: No se pudo agregar la entrada a /etc/fstab. Verifique los permisos."
-        exit 1
-    fi
-
-    # Montar la unidad inmediatamente para verificar
-    echo "Montando la unidad..."
-    if mount "$punto_montaje"; then
-        echo "La unidad se ha montado correctamente en $punto_montaje. Para montarla manualmente en el futuro, use: mount $punto_montaje"
-    else
-        echo "Error: No se pudo montar la unidad. Verifique el sistema de archivos y los permisos."
-        exit 1
-    fi
-
-    # Preguntar al usuario si desea ejecutar systemctl daemon-reload
-    echo -e "\nPara aplicar los cambios en fstab, es recomendable ejecutar 'systemctl daemon-reload'."
-    echo -e "¿Desea ejecutar este comando ahora? (s/n):"
-    read -r reload_confirmacion
-    if [[ "$reload_confirmacion" == "s" || "$reload_confirmacion" == "S" ]]; then
-        if systemctl daemon-reload; then
-            echo "systemctl daemon-reload se ejecutó correctamente."
-        else
-            echo "Error: No se pudo ejecutar 'systemctl daemon-reload'. Verifique los permisos."
-        fi
-    else
-        echo "Recuerde ejecutar 'systemctl daemon-reload' en cuanto le sea posible para aplicar los cambios."
-    fi
-
-else
+if [ -z "$uuid" ] || [ -z "$fstype" ]; then
     echo "Error: No se encontró el UUID o el tipo de sistema de archivos de la unidad. Verifique que haya ingresado un nombre de unidad válido."
     exit 1
 fi
 
-# Texto simplificado en lugar de arte ASCII
-echo
-echo "------------------------------------------------"
-echo "                 Speeder"
-echo "------------------------------------------------"
-echo "                by Quamagi & Bard"
-echo
+# Verificar si ya existe una entrada en /etc/fstab
+if grep -q "UUID=$uuid" /etc/fstab; then
+    echo "Error: Ya existe una entrada en /etc/fstab para esta unidad. No se realizarán cambios duplicados."
+    exit 1
+fi
+
+# Definir opciones de montaje según el tipo de sistema de archivos
+case "$fstype" in
+    ext4|ext3|ext2)
+        opciones="defaults,auto,user,rw,exec,umask=022"
+        ;;
+    ntfs|vfat|exfat)
+        opciones="defaults,auto,users,rw,exec,uid=$USER_ID,gid=$GROUP_ID,umask=022"
+        ;;
+    btrfs|xfs)
+        opciones="defaults,auto,users,rw,exec"
+        ;;
+    *)
+        opciones="defaults,auto,users,rw,exec,umask=022"
+        ;;
+esac
+
+# Confirmar con el usuario antes de modificar /etc/fstab
+echo -e "\nSe agregará la siguiente entrada a /etc/fstab:\nUUID=$uuid $punto_montaje $fstype $opciones 0 0"
+if ! confirmacion "¿Desea continuar con los cambios?"; then
+    echo "Operación cancelada por el usuario. Saliendo del script."
+    exit 1
+fi
+
+# Agregar entrada en /etc/fstab con opciones determinadas
+echo "Agregando entrada a /etc/fstab..."
+if echo "UUID=$uuid $punto_montaje $fstype $opciones 0 0" >> /etc/fstab; then
+    echo "La unidad se ha configurado para montarse automáticamente al iniciar."
+else
+    echo "Error: No se pudo agregar la entrada a /etc/fstab. Verifique los permisos."
+    exit 1
+fi
+
+# Montar la unidad inmediatamente para verificar
+echo "Montando la unidad..."
+if mount "$punto_montaje"; then
+    echo "La unidad se ha montado correctamente en $punto_montaje. Para montarla manualmente en el futuro, use: mount $punto_montaje"
+else
+    echo "Error: No se pudo montar la unidad. Verifique el sistema de archivos y los permisos."
+    exit 1
+fi
+
+# Preguntar al usuario si desea ejecutar systemctl daemon-reload
+if confirmacion "¿Desea ejecutar 'systemctl daemon-reload' para aplicar los cambios en fstab?"; then
+    if systemctl daemon-reload; then
+        echo "systemctl daemon-reload se ejecutó correctamente."
+    else
+        echo "Error: No se pudo ejecutar 'systemctl daemon-reload'. Verifique los permisos."
+    fi
+else
+    echo "Recuerde ejecutar 'systemctl daemon-reload' en cuanto le sea posible para aplicar los cambios."
+fi
 
 # Confirmación de finalización
 echo "Configuración realizada correctamente."
