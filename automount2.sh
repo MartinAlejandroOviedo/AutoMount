@@ -148,8 +148,34 @@ echo "Montando la unidad..."
 if mount "$punto_montaje"; then
     echo "La unidad se ha montado correctamente en $punto_montaje. Para montarla manualmente en el futuro, use: mount $punto_montaje"
 else
-    echo "Error: No se pudo montar la unidad. Verifique el sistema de archivos y los permisos."
-    exit 1
+    # Si es NTFS, intenta reparar automáticamente con ntfsfix
+    if [[ "$fstype" == "ntfs" ]]; then
+        echo "Intentando reparar el sistema de archivos NTFS con ntfsfix..."
+        if ! command -v ntfsfix &> /dev/null; then
+            echo "ntfsfix no está instalado. Instalando..."
+            if command -v apt-get &> /dev/null; then
+                apt-get update && apt-get install -y ntfs-3g
+            elif command -v yum &> /dev/null; then
+                yum install -y ntfs-3g
+            elif command -v dnf &> /dev/null; then
+                dnf install -y ntfs-3g
+            else
+                echo "No se pudo instalar ntfs-3g automáticamente. Intente instalarlo manualmente."
+                exit 1
+            fi
+        fi
+        ntfsfix "/dev/$unidad"
+        echo "Reintentando montar la unidad..."
+        if mount "$punto_montaje"; then
+            echo "La unidad se ha montado correctamente en $punto_montaje después de usar ntfsfix."
+        else
+            echo "Error: No se pudo montar la unidad después de intentar reparar con ntfsfix. Verifique el sistema de archivos y los permisos."
+            exit 1
+        fi
+    else
+        echo "Error: No se pudo montar la unidad. Verifique el sistema de archivos y los permisos."
+        exit 1
+    fi
 fi
 
 # Preguntar al usuario si desea ejecutar systemctl daemon-reload
